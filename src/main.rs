@@ -1,48 +1,53 @@
+#[macro_use] extern crate rocket;
+use serde::Deserialize;
+use rocket::http::Header;
+use rocket::{Request, Response};
+use rocket::fairing::{Fairing, Info, Kind};
 
+pub struct CORS;
 
-use tokio::{net::TcpListener, io::{ AsyncWriteExt, BufReader, AsyncBufReadExt}, sync::broadcast};
+#[rocket::async_trait]
+impl Fairing for CORS {
+    fn info(&self) -> Info {
+        Info {
+            name: "Add CORS headers to responses",
+            kind: Kind::Response
+        }
+    }
 
-#[tokio::main]
-async fn main() {
-	let listener = TcpListener::bind("localhost:8989").await.unwrap();
+    async fn on_response<'r>(&self, _request: &'r Request<'_>, response: &mut Response<'r>) {
+        response.set_header(Header::new("Access-Control-Allow-Origin", "*"));
+        response.set_header(Header::new("Access-Control-Allow-Methods", "POST, GET, PATCH, OPTIONS"));
+        response.set_header(Header::new("Access-Control-Allow-Headers", "*"));
+        response.set_header(Header::new("Access-Control-Allow-Credentials", "true"));
+    }
+}
 
-	let (tx, _rx) = broadcast::channel(10);
+#[derive(Deserialize)]
+struct Res {
+    results: Vec<Song>
+}
 
-	loop {
-		let (mut socket, addr) = listener.accept().await.unwrap();
+#[derive(Deserialize)]
+struct Song {
+    media_preview_url: String,
+}
 
-		let tx = tx.clone();
-		let mut rx = tx.subscribe();
+#[options("/one/<title>")]
+fn coryy(title: &str) -> String {
+    format!("fuck cors by {}", title)
+}
 
-		tokio::spawn(async move {
-			let (read, mut write) = socket.split();
-			let join_msg = format!("{} joined", &addr);
-			tx.send((join_msg, addr)).unwrap();
+#[get("/one/<title>")]
+fn hello(title: &str) -> String {
+    let res: Res = ureq::get(&format!("https://www.jiosaavn.com/api.php?_format=json&n=5&p=1&_marker=0&ctx=android&__call=search.getResults&q={}", title))
+        .call().unwrap()
+        .into_json().unwrap();
+    format!("{}", res.results[0].media_preview_url.clone().replace("preview", "aac").replace("_96_p.mp4", "_320.mp4"))
 
-			let mut reader = BufReader::new(read);
-			let mut line = String::new();
-	
-			loop {
-				tokio::select! {
-					reslt = reader.read_line(&mut line) => {
-						if reslt.unwrap() == 0 {
-							break;
-						}
+}
 
-						line = format!("{}: {}", addr, line);
-
-						tx.send((line.clone(), addr)).unwrap();
-						line.clear();
-					}
-					reslt = rx.recv() => {
-						let (msg, other_addr) = reslt.unwrap();
-						if addr != other_addr {
-							write.write_all(msg.as_bytes()).await.unwrap();
-						}
-
-					}
-				}
-			};
-		});
-	}
+#[launch]
+fn rocket() -> _ {
+    rocket::build().mount("/", routes![hello, coryy]).attach(CORS)
 }
